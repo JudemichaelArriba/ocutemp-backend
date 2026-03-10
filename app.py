@@ -13,6 +13,8 @@ app = Flask(__name__)
 CORS(app)
 
 
+API_KEY = os.environ.get("API_KEY")
+
 model = joblib.load("model/comfort_model_ver1.pk1") 
 
 @app.route("/predict", methods=["POST"])
@@ -27,6 +29,13 @@ def predict():
     }
     Returns predictions for all rooms.
     """
+
+  
+    client_key = request.headers.get("x-api-key")
+
+    if not client_key or client_key != API_KEY:
+        return jsonify({"error": "Unauthorized"}), 401
+
     data = request.json
     rooms = data.get("rooms", [])
     results = []
@@ -36,7 +45,6 @@ def predict():
         temp = room["temperature"]
         rh = room["humidity"]
 
-    
         input_df = pd.DataFrame([{
             "Air temperature (C)": temp,
             "Relative humidity (%)": rh,
@@ -44,11 +52,9 @@ def predict():
             "temp_humidity_interaction": temp * rh
         }])
 
-  
         prediction = model.predict(input_df)[0]
         confidence = max(model.predict_proba(input_df)[0]) * 100
 
-      
         if prediction == "too_hot":
             recommended = max(18, temp - 2)
         elif prediction == "too_cold":
