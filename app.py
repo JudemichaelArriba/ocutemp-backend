@@ -17,6 +17,16 @@ API_KEY = os.environ.get("API_KEY")
 
 model = joblib.load("model/comfort_model_ver1.pk1") 
 
+
+@app.route("/ping", methods=["GET"])
+def health_check():
+    client_key = request.headers.get("x-api-key")
+    if not client_key or client_key != API_KEY:
+        return jsonify({"error": "Unauthorized"}), 401
+    return jsonify({"status": "alive"}), 200
+
+
+
 @app.route("/predict", methods=["POST"])
 def predict():
     """
