@@ -9,7 +9,7 @@ CORS(app)
 
 API_KEY = os.environ.get("API_KEY")
 
-model = joblib.load("model/ml-2.pk1")
+model = joblib.load("model/ml-2.pkl")
 
 
 # ----------------------------
