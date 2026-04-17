@@ -9,12 +9,9 @@ CORS(app)
 
 API_KEY = os.environ.get("API_KEY")
 
-model = joblib.load("model/ml-2.pkl")
 
+model = joblib.load("model/ml-3.pkl")
 
-# ----------------------------
-# FEATURE FUNCTIONS (SAME AS TRAINING)
-# ----------------------------
 
 def calculate_heat_index(T, RH):
     return (-8.784695
@@ -27,15 +24,13 @@ def calculate_heat_index(T, RH):
             + 0.00072546 * T * RH * RH
             - 0.000003582 * T * T * RH * RH)
 
-
 def calculate_discomfort_index(T, RH):
-    RH = RH / 100
-    return T - 0.55 * (1 - RH) * (T - 14.5)
+   
+    RH_ratio = RH / 100
+    return T - 0.55 * (1 - RH_ratio) * (T - 14.5)
 
 
-# ----------------------------
-# HEALTH CHECK
-# ----------------------------
+
 @app.route("/ping", methods=["GET"])
 def health_check():
     client_key = request.headers.get("x-api-key")
@@ -45,9 +40,6 @@ def health_check():
     return jsonify({"status": "alive"}), 200
 
 
-# ----------------------------
-# PREDICT ROUTE (FIXED)
-# ----------------------------
 @app.route("/predict", methods=["POST"])
 def predict():
     client_key = request.headers.get("x-api-key")
@@ -65,28 +57,25 @@ def predict():
         temp = room["temperature"]
         rh = room["humidity"]
 
-        # ---- FEATURE ENGINEERING (MATCH TRAINING) ----
-        humidity_ratio = rh / 100
-        interaction = temp * humidity_ratio
+
+        interaction = temp * (rh / 100)
         heat_index = calculate_heat_index(temp, rh)
         discomfort_index = calculate_discomfort_index(temp, rh)
 
         input_df = pd.DataFrame([{
             "temp": temp,
             "humidity": rh,
-            "humidity_ratio": humidity_ratio,
             "temp_humidity_interaction": interaction,
             "heat_index": heat_index,
             "discomfort_index": discomfort_index
         }])
 
-        # ---- PREDICT (REGRESSION OUTPUT) ----
+
         predicted_ac = model.predict(input_df)[0]
 
-        # Clamp to valid AC range
+
         predicted_ac = int(round(max(17, min(26, predicted_ac))))
 
-        # ---- CONDITION LABEL (MATCH YOUR CELL 10 LOGIC) ----
         if heat_index >= 38:
             condition = "VERY HOT / HIGH HUMIDITY"
         elif heat_index >= 34:
@@ -108,9 +97,7 @@ def predict():
     return jsonify(results)
 
 
-# ----------------------------
-# RUN SERVER
-# ----------------------------
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
