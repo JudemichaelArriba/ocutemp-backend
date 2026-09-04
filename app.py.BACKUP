@@ -1,7 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import joblib
-import json
 import pandas as pd
 import os
 
@@ -10,14 +9,11 @@ CORS(app)
 
 API_KEY = os.environ.get("API_KEY")
 
-tsv_model = joblib.load("model/tsv_model.pkl")
-with open("model/setpoint_policy.json") as f:
-    POLICY = json.load(f)
+
+model = joblib.load("model/ml-3.pkl")
 
 
 def calculate_heat_index(T, RH):
-    # Kept for the display-only "condition" label (VERY HOT / HOT / etc.).
-    # No longer a model input.
     return (-8.784695
             + 1.61139411 * T
             + 2.338549 * RH
@@ -28,12 +24,11 @@ def calculate_heat_index(T, RH):
             + 0.00072546 * T * RH * RH
             - 0.000003582 * T * T * RH * RH)
 
+def calculate_discomfort_index(T, RH):
+   
+    RH_ratio = RH / 100
+    return T - 0.55 * (1 - RH_ratio) * (T - 14.5)
 
-def recommended_setpoint(rh):
-    """Stage 2: deterministic policy, derived from the Stage 1 TSV model's own
-    neutral point. Clamped to the ASHRAE-55 comfort band."""
-    t_neutral = (-POLICY["b0"] - POLICY["b_rh"] * rh) / POLICY["b_temp"]
-    return max(POLICY["clamp_min"], min(POLICY["clamp_max"], t_neutral))
 
 
 @app.route("/ping", methods=["GET"])
@@ -41,40 +36,45 @@ def health_check():
     client_key = request.headers.get("x-api-key")
     if not client_key or client_key != API_KEY:
         return jsonify({"error": "Unauthorized"}), 401
+
     return jsonify({"status": "alive"}), 200
 
 
 @app.route("/predict", methods=["POST"])
 def predict():
     client_key = request.headers.get("x-api-key")
+
     if not client_key or client_key != API_KEY:
         return jsonify({"error": "Unauthorized"}), 401
 
     data = request.json
     rooms = data.get("rooms", [])
+
     results = []
 
     for room in rooms:
         room_id = room.get("id", "unknown")
+        temp = room["temperature"]
+        rh = room["humidity"]
 
-        # NEW: validate input instead of letting a KeyError become a 500.
-        if "temperature" not in room or "humidity" not in room:
-            return jsonify({"error": f"room '{room_id}' missing temperature/humidity"}), 400
-        try:
-            temp = float(room["temperature"])
-            rh = float(room["humidity"])
-        except (TypeError, ValueError):
-            return jsonify({"error": f"room '{room_id}' has non-numeric temperature/humidity"}), 400
 
+        interaction = temp * (rh / 100)
         heat_index = calculate_heat_index(temp, rh)
+        discomfort_index = calculate_discomfort_index(temp, rh)
 
-        # Stage 1: predicted thermal sensation (informational - optional field)
-        tsv_input = pd.DataFrame([{"temp": temp, "humidity": rh}])
-        predicted_tsv = float(tsv_model.predict(tsv_input)[0])
+        input_df = pd.DataFrame([{
+            "temp": temp,
+            "humidity": rh,
+            "temp_humidity_interaction": interaction,
+            "heat_index": heat_index,
+            "discomfort_index": discomfort_index
+        }])
 
-        # Stage 2: the actual setpoint served to the ESP32
-        setpoint = recommended_setpoint(rh)
-        predicted_ac = int(round(setpoint))
+
+        predicted_ac = model.predict(input_df)[0]
+
+
+        predicted_ac = int(round(max(17, min(26, predicted_ac))))
 
         if heat_index >= 38:
             condition = "VERY HOT / HIGH HUMIDITY"
@@ -91,11 +91,11 @@ def predict():
             "room_id": room_id,
             "condition": condition,
             "heat_index": round(heat_index, 2),
-            "predicted_comfort_vote": round(predicted_tsv, 2),  # NEW, optional
             "recommended_ac": predicted_ac
         })
 
     return jsonify(results)
+
 
 
 if __name__ == "__main__":
