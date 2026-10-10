@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import joblib
-import json
+import numpy as np
 import pandas as pd
 import os
 
@@ -10,9 +10,13 @@ CORS(app)
 
 API_KEY = os.environ.get("API_KEY")
 
-tsv_model = joblib.load("model/tsv_model.pkl")
-with open("model/setpoint_policy.json") as f:
-    POLICY = json.load(f)
+# ml-4: Random Forest (monotonic) that predicts thermal sensation vote (TSV)
+# from temperature + humidity. The setpoint is where it predicts neutral (TSV = 0).
+model = joblib.load("model/ml-4.pkl")
+model.n_jobs = 1  # one small batch per request; avoid thread start-up cost
+
+CLAMP_MIN, CLAMP_MAX = 23.0, 26.0
+SWEEP = np.round(np.arange(16.0, 32.0001, 0.05), 2)
 
 
 def calculate_heat_index(T, RH):
@@ -30,10 +34,12 @@ def calculate_heat_index(T, RH):
 
 
 def recommended_setpoint(rh):
-    """Stage 2: deterministic policy, derived from the Stage 1 TSV model's own
-    neutral point. Clamped to the ASHRAE-55 comfort band."""
-    t_neutral = (-POLICY["b0"] - POLICY["b_rh"] * rh) / POLICY["b_temp"]
-    return max(POLICY["clamp_min"], min(POLICY["clamp_max"], t_neutral))
+    """First temperature at which ml-4 predicts a neutral vote (TSV >= 0) at this
+    humidity, clamped to the ASHRAE-55 summer comfort band. The model is monotonic
+    in temperature, so there is exactly one crossing."""
+    tsv = model.predict(pd.DataFrame({"temp": SWEEP, "humidity": rh}))
+    neutral = SWEEP[np.argmax(tsv >= 0)] if (tsv >= 0).any() else CLAMP_MAX
+    return float(np.clip(neutral, CLAMP_MIN, CLAMP_MAX))
 
 
 @app.route("/ping", methods=["GET"])
@@ -68,11 +74,11 @@ def predict():
 
         heat_index = calculate_heat_index(temp, rh)
 
-        # Stage 1: predicted thermal sensation (informational - optional field)
+        # Predicted thermal sensation at the current room conditions (informational)
         tsv_input = pd.DataFrame([{"temp": temp, "humidity": rh}])
-        predicted_tsv = float(tsv_model.predict(tsv_input)[0])
+        predicted_tsv = float(model.predict(tsv_input)[0])
 
-        # Stage 2: the actual setpoint served to the ESP32
+        # The setpoint served to the ESP32
         setpoint = recommended_setpoint(rh)
         predicted_ac = int(round(setpoint))
 
